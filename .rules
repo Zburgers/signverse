@@ -1,0 +1,10 @@
+1. DO NOT build new ML models unless explicitly instructed.
+2. Prefer open-source tools (SignKit, GenKit, HuggingFace).
+3. All UI must stay inside Tailwind + Next.js Pages/App folder.
+4. Backend logic stays in `/api/translate/route.ts`.
+5. 3D rendering and animation stays inside `SignKitPlayer.tsx`.
+6. Avatar files (GLB) must go inside `public/glb/`.
+7. Always optimize for modularity and clean code structure.
+8. If new signs are added, update the `phraseMap` dictionary.
+9. Target: Convert a sentence to a sequence of ISL sign files, displayed via animated avatar.
+10. Render each GLB sign for 2.5s, then proceed to next.
