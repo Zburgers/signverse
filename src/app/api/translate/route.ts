@@ -1,4 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import { YoutubeTranscript } from 'youtube-transcript';
+
+// Initialize Google Generative AI
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY!);
 
 // Sample phrase mapping for MVP
 const phraseMap: Record<string, string> = {
@@ -11,40 +16,61 @@ const phraseMap: Record<string, string> = {
   'good night': '/glb/good_night.glb',
   'yes': '/glb/yes.glb',
   'no': '/glb/no.glb',
+  'good': '/glb/good.glb',
+  'morning': '/glb/morning.glb',
+  'night': '/glb/night.glb',
+  'fine': '/glb/fine.glb',
+  'i': '/glb/i.glb',
+  'am': '/glb/am.glb',
+  'you': '/glb/you.glb',
+  'are': '/glb/are.glb',
+  'thanks': '/glb/thank_you.glb',
+  'thank': '/glb/thank_you.glb',
 };
 
-// Function to simplify text using basic rules
-// In a real app, this would use GenKit or Gemini API
-function simplifyText(text: string): string {
-  // Basic text simplification for MVP
-  return text
-    .replace(/\b(I am|I'm)\b/gi, 'I am')
-    .replace(/\b(you are|you're)\b/gi, 'you are')
-    .replace(/\b(they are|they're)\b/gi, 'they are')
-    .replace(/\b(we are|we're)\b/gi, 'we are')
-    .replace(/\b(he is|he's)\b/gi, 'he is')
-    .replace(/\b(she is|she's)\b/gi, 'she is')
-    .replace(/\b(it is|it's)\b/gi, 'it is')
-    .replace(/\b(that is|that's)\b/gi, 'that is')
-    .replace(/\b(what is|what's)\b/gi, 'what is')
-    .replace(/\b(how is|how's)\b/gi, 'how is')
-    .replace(/\b(who is|who's)\b/gi, 'who is')
-    .replace(/\b(where is|where's)\b/gi, 'where is')
-    .replace(/\b(when is|when's)\b/gi, 'when is')
-    .replace(/\b(why is|why's)\b/gi, 'why is')
-    .trim();
+// Function to simplify text using Gemini API
+async function simplifyTextWithGemini(text: string): Promise<string> {
+  try {
+    const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+    
+    const prompt = `Simplify the following text into basic English phrases that can be mapped to sign language. 
+    Break down complex sentences into simple phrases. Remove unnecessary words but keep the core meaning.
+    Only return the simplified text for conversion into ISL, nothing else.
+    
+    Text: "${text}"`;
+    
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const simplifiedText = response.text().trim();
+    
+    return simplifiedText;
+  } catch (error) {
+    console.error('Error simplifying text with Gemini:', error);
+    // Fallback to basic simplification if API fails
+    return text
+      .replace(/[^\w\s]|_/g, ' ') // Remove punctuation
+      .replace(/\s+/g, ' ') // Replace multiple spaces with single space
+      .toLowerCase()
+      .trim();
+  }
 }
 
 // Function to translate text to sign language files
-function translateToSignLanguage(text: string): string[] {
-  const simplifiedText = simplifyText(text.toLowerCase());
+async function translateToSignLanguage(text: string): Promise<string[]> {
+  // First, simplify the text using Gemini
+  const simplifiedText = await simplifyTextWithGemini(text);
   const words = simplifiedText.split(/\s+/);
   const files: string[] = [];
   
-  // First try exact phrase matches
-  for (const phrase in phraseMap) {
-    if (simplifiedText.includes(phrase)) {
-      files.push(phraseMap[phrase]);
+  // First try exact phrase matches (up to 4 words)
+  for (let i = 0; i < words.length; i++) {
+    for (let j = 1; j <= 4 && i + j <= words.length; j++) {
+      const phrase = words.slice(i, i + j).join(' ');
+      if (phraseMap[phrase]) {
+        files.push(phraseMap[phrase]);
+        i += j - 1; // Skip words already matched in a phrase
+        break;
+      }
     }
   }
   
@@ -57,15 +83,14 @@ function translateToSignLanguage(text: string): string[] {
     }
   }
   
-  return files;
+  // Remove duplicates while preserving order
+  return Array.from(new Set(files));
 }
 
 // Function to extract text from YouTube video
-// In a real app, this would use YouTube API or a transcription service
 async function extractTextFromYouTube(youtubeUrl: string): Promise<string> {
-  // For MVP, return a sample text
-  // In a real app, this would extract captions or transcribe audio
-  return "Hello, how are you? Thank you for watching this video.";
+  const transcript = await YoutubeTranscript.fetchTranscript(youtubeUrl);
+  return transcript.map(t => t.text).join(' ');
 }
 
 export async function POST(request: NextRequest) {
@@ -73,20 +98,51 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { text, youtubeUrl } = body;
     
-    let textToTranslate = text;
+    if (!text && !youtubeUrl) {
+      return NextResponse.json(
+        { success: false, error: 'Either text or YouTube URL is required' },
+        { status: 400 }
+      );
+    }
+    
+    let textToTranslate = text || '';
     
     // If YouTube URL is provided, extract text from video
-    if (youtubeUrl && !text) {
-      textToTranslate = await extractTextFromYouTube(youtubeUrl);
+    if (youtubeUrl) {
+      try {
+        const extractedText = await extractTextFromYouTube(youtubeUrl);
+        if (extractedText) {
+          textToTranslate = extractedText;
+        }
+      } catch (error) {
+        console.error('Error extracting text from YouTube:', error);
+        // Continue with the original text if YouTube extraction fails
+      }
+    }
+    
+    if (!textToTranslate.trim()) {
+      return NextResponse.json(
+        { success: false, error: 'No text to translate' },
+        { status: 400 }
+      );
     }
     
     // Translate text to sign language files
-    const signFiles = translateToSignLanguage(textToTranslate);
+    const signFiles = await translateToSignLanguage(textToTranslate);
+    
+    if (signFiles.length === 0) {
+      return NextResponse.json({
+        success: false,
+        error: 'No matching sign language files found for the input',
+        originalText: textToTranslate
+      }, { status: 404 });
+    }
     
     return NextResponse.json({ 
       success: true, 
       signFiles,
-      originalText: textToTranslate
+      originalText: textToTranslate,
+      simplifiedText: await simplifyTextWithGemini(textToTranslate)
     });
   } catch (error) {
     console.error('Error in translation API:', error);
